@@ -33,14 +33,17 @@ class Token(object):
         self.supportlxd = False
         self.url = url
 
+
 def create_controller(name, data):
     Popen(["python3", "{}/scripts/bootstrap_azure_controller.py".format(settings.SOJOBO_API_DIR),
            name, data['region'], data['credential']])
     return 202, 'Environment {} is being created in region {}'.format(name, data['region'])
 
+
 def get_supported_series():
     #TODO: Supported series?
     return ['trusty', 'xenial', 'yakkety']
+
 
 def get_supported_regions():
     return ['centralus', 'eastus', 'eastus2', 'northcentralus', 'southcentralus',
@@ -61,6 +64,7 @@ def check_valid_credentials(credentials):
         error = errors.key_does_not_exist(wrong_keys)
         abort(error[0], error[1])
 
+
 def generate_cred_file(name, credentials):
     result = {
         'type': 'service-principal-secret',
@@ -68,6 +72,7 @@ def generate_cred_file(name, credentials):
         'key': {'file': str(json.dumps(credentials))}
     }
     return result
+
 
 def add_credential(user, data):
     check_valid_credentials(data['credential'])

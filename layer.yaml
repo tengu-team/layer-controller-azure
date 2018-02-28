@@ -1,1 +1,2 @@
 includes: ['layer:basic', 'interface:sojobo']
+repo: https://github.com/tengu-team/layer-controller-azure

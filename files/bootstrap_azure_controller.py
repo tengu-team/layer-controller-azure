@@ -17,6 +17,7 @@
 import asyncio
 import logging
 import os
+import base64
 import hashlib
 from pathlib import Path
 from subprocess import check_output, check_call
@@ -38,14 +39,17 @@ class JuJu_Token(object):  #pylint: disable=R0903
         self.password = settings.JUJU_ADMIN_PASSWORD
 
 
-async def bootstrap_azure_controller(name, region, cred_name):#pylint: disable=E0001
+async def bootstrap_azure_controller(c_name, region, cred_name):#pylint: disable=E0001
     try:
+        # Check if the credential is valid.
         token = JuJu_Token()
         valid_cred_name = 't{}'.format(hashlib.md5(cred_name.encode('utf')).hexdigest())
         credential = juju.get_credential(token.username, cred_name)
         if not credential['state'] == 'ready':
             raise Exception('The Credential {} is not ready yet.'.format(credential['name']))
         juju.get_controller_types()['azure'].check_valid_credentials(credential['credential'])
+
+        # Create credential file that can be used to bootstrap controller.
         cred_path = '/home/{}/credentials'.format(settings.SOJOBO_USER)
         if not os.path.exists(cred_path):
             os.mkdir(cred_path)
@@ -59,41 +63,47 @@ async def bootstrap_azure_controller(name, region, cred_name):#pylint: disable=E
                                                   'subscription-id': credential['credential']['subscription-id']}}}}
         with open(path, 'w') as dest:
             yaml.dump(data, dest, default_flow_style=False)
+
+        # Add the credential.
         check_call(['juju', 'add-credential', 'azure', '-f', path, '--replace'])
-        check_call(['juju', 'bootstrap', '--agent-version=2.3.0', 'azure/{}'.format(region), name, '--credential', valid_cred_name])
+
+        # Bootstrap the controller.
+        check_call(['juju', 'bootstrap', '--agent-version=2.3.0', 'azure/{}'.format(region), c_name, '--credential', valid_cred_name])
         os.remove(path)
 
         logger.info('Setting admin password')
-        check_output(['juju', 'change-user-password', 'admin', '-c', name],
+        check_output(['juju', 'change-user-password', 'admin', '-c', c_name],
                      input=bytes('{}\n{}\n'.format(token.password, token.password), 'utf-8'))
 
         logger.info('Updating controller in database')
         with open(os.path.join(str(Path.home()), '.local', 'share', 'juju', 'controllers.yaml'), 'r') as data:
             con_data = yaml.load(data)
         datastore.set_controller_state(
-            name,
+            c_name,
             'ready',
-            con_data['controllers'][name]['api-endpoints'],
-            con_data['controllers'][name]['uuid'],
-            con_data['controllers'][name]['ca-cert'])
+            con_data['controllers'][c_name]['api-endpoints'],
+            con_data['controllers'][c_name]['uuid'],
+            con_data['controllers'][c_name]['ca-cert'])
 
         logger.info('Connecting to controller')
         controller = Controller()
 
         logger.info('Adding existing credentials and default models to database')
         credentials = datastore.get_credentials(token.username)
-        await controller.connect(con_data['controllers'][name]['api-endpoints'][0], token.username, token.password, con_data['controllers'][name]['ca-cert'])
+        await controller.connect(con_data['controllers'][c_name]['api-endpoints'][0],
+                                 token.username, token.password, con_data['controllers'][c_name]['ca-cert'])
         for cred in credentials:
             if cred['name'] != cred_name:
                 await juju.update_cloud(controller, 'azure', cred['name'], token.username)
             models = await controller.get_models()
             for model in models.serialize()['user-models']:
                 model = model.serialize()['model'].serialize()
-                # TODO: Checken of model al bestaat?
-                new_model = datastore.create_model(model['name'], state='Model is being deployed', uuid='')
-                datastore.add_model_to_controller(name, new_model["_key"])
-                datastore.set_model_state(new_model["_key"], 'ready', credential=cred_name, uuid=model['uuid'])
-                datastore.set_model_access(new_model["_key"], token.username, 'admin')
+                m_key = juju.construct_model_key(c_name, model['name'])
+                datastore.create_model(m_key, model['name'], state='Model is being deployed', uuid='')
+                datastore.add_model_to_controller(c_name, m_key)
+                datastore.set_model_state(m_key, 'ready', credential=cred_name, uuid=model['uuid'])
+                datastore.set_model_access(m_key, token.username, 'admin')
+
         await controller.disconnect()
         logger.info('Controller succesfully created!')
     except Exception:  #pylint: disable=W0703
@@ -101,7 +111,7 @@ async def bootstrap_azure_controller(name, region, cred_name):#pylint: disable=E
         lines = traceback.format_exception(exc_type, exc_value, exc_traceback)
         for l in lines:
             logger.error(l)
-        datastore.set_controller_state(name, 'error')
+        datastore.set_controller_state(c_name, 'error')
 
 
 if __name__ == '__main__':
