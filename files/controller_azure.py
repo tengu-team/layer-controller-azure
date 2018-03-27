@@ -74,9 +74,9 @@ def generate_cred_file(name, credentials):
     return result
 
 
-def add_credential(user, data):
-    check_valid_credentials(data['credential'])
-    datastore.add_credential(user, data)
+def add_credential(user, juju_username, credential):
+    check_valid_credentials(credential['credential'])
+    datastore.add_credential(user, credential)
     Popen(["python3", "{}/scripts/add_azure_credential.py".format(settings.SOJOBO_API_DIR),
-           user, str(data), settings.SOJOBO_API_DIR])
+           user, juju_username, str(credential)])
     return 202, 'Credentials are being added for user {}'.format(user)

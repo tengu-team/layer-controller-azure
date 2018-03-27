@@ -24,27 +24,25 @@ sys.path.append('/opt')
 from juju import tag
 from juju.client import client
 from juju.controller import Controller
-from sojobo_api import settings  #pylint: disable=C0413
-from sojobo_api.api import w_datastore as ds, w_juju as juju  #pylint: disable=C0413
+from sojobo_api import settings
+from sojobo_api.api import w_datastore as ds, w_juju as juju
 
-class JuJu_Token(object):  #pylint: disable=R0903
-    def __init__(self):
-        self.username = settings.JUJU_ADMIN_USER
-        self.password = settings.JUJU_ADMIN_PASSWORD
 
-async def add_credential(username, credentials):
+async def add_credential(username, juju_username, credentials):
     try:
         cred = ast.literal_eval(credentials)
-        token = JuJu_Token()
         c_type = cred['type']
-        credential_name = 't{}'.format(hashlib.md5(cred['name'].encode('utf')).hexdigest())
         controllers = ds.get_cloud_controllers(c_type)
         for con in controllers:
+            logger.info('Connecting with controller: %s...', con['name'])
             controller = Controller()
-            await controller.connect(con['api-endpoints'][0], token.username, token.password, con['ca-cert'])
+            await controller.connect(con['endpoints'][0],
+                                     settings.JUJU_ADMIN_USER,
+                                     settings.JUJU_ADMIN_PASSWORD,
+                                     con['ca_cert'])
             logger.info('%s -> Adding credentials', con['name'])
-            await juju.update_cloud(controller, 'azure', cred['name'], username)
-            logger.info('%s -> controller updated', con['name'])
+            await juju.update_cloud(controller, 'azure', cred, juju_username)
+            logger.info('%s -> Controller updated', con['name'])
             await controller.disconnect()
         ds.set_credential_ready(username, cred['name'])
         logger.info('Succesfully added credential')
@@ -59,7 +57,7 @@ if __name__ == '__main__':
     logging.basicConfig(level=logging.DEBUG)
     ws_logger = logging.getLogger('websockets.protocol')
     logger = logging.getLogger('add_azure_credential')
-    hdlr = logging.FileHandler('{}/log/add_azure_credential.log'.format(sys.argv[3]))
+    hdlr = logging.FileHandler('{}/log/add_azure_credential.log'.format(settings.SOJOBO_API_DIR))
     formatter = logging.Formatter('%(asctime)s %(levelname)s %(message)s')
     hdlr.setFormatter(formatter)
     ws_logger.addHandler(hdlr)
@@ -68,5 +66,5 @@ if __name__ == '__main__':
     logger.setLevel(logging.DEBUG)
     loop = asyncio.get_event_loop()
     loop.set_debug(True)
-    loop.run_until_complete(add_credential(sys.argv[1], sys.argv[2]))
+    loop.run_until_complete(add_credential(sys.argv[1], sys.argv[2], sys.argv[3]))
 loop.close()
