@@ -26,18 +26,10 @@ import json
 CRED_KEYS = ['application-id, application-password, subscription-id']
 
 
-class Token(object):
-    def __init__(self, url):
-        self.type = 'azure'
-        #TODO: Support lxd?
-        self.supportlxd = False
-        self.url = url
-
-
-def create_controller(name, data):
+def create_controller(name, region, credential, username, password):
     Popen(["python3", "{}/scripts/bootstrap_azure_controller.py".format(settings.SOJOBO_API_DIR),
-           name, data['region'], data['credential']])
-    return 202, 'Environment {} is being created in region {}'.format(name, data['region'])
+           name, region, credential, username, password])
+    return 202, 'Environment {} is being created in region {}'.format(name, region)
 
 
 def get_supported_series():
@@ -74,9 +66,15 @@ def generate_cred_file(name, credentials):
     return result
 
 
-def add_credential(user, juju_username, credential):
+def generate_update_cred_file(filepath):
+    with open(filepath) as json_data:
+        data = json.load(json_data)
+    return data
+
+
+def add_credential(user, juju_username, juju_password, credential):
     check_valid_credentials(credential['credential'])
     datastore.add_credential(user, credential)
     Popen(["python3", "{}/scripts/add_azure_credential.py".format(settings.SOJOBO_API_DIR),
-           user, juju_username, str(credential)])
+           user, juju_username, juju_password, str(credential)])
     return 202, 'Credentials are being added for user {}'.format(user)

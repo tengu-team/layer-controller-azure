@@ -28,7 +28,7 @@ from sojobo_api import settings
 from sojobo_api.api import w_datastore as ds, w_juju as juju
 
 
-async def add_credential(username, juju_username, credentials):
+async def add_credential(username, juju_username, juju_password, credentials):
     try:
         cred = ast.literal_eval(credentials)
         c_type = cred['type']
@@ -37,11 +37,11 @@ async def add_credential(username, juju_username, credentials):
             logger.info('Connecting with controller: %s...', con['name'])
             controller = Controller()
             await controller.connect(con['endpoints'][0],
-                                     settings.JUJU_ADMIN_USER,
-                                     settings.JUJU_ADMIN_PASSWORD,
+                                     juju_username,
+                                     juju_password,
                                      con['ca_cert'])
             logger.info('%s -> Adding credentials', con['name'])
-            await juju.update_cloud(controller, 'azure', cred, juju_username)
+            await juju.update_cloud(controller, 'azure', cred['name'], juju_username, username)
             logger.info('%s -> Controller updated', con['name'])
             await controller.disconnect()
         ds.set_credential_ready(username, cred['name'])
@@ -66,5 +66,5 @@ if __name__ == '__main__':
     logger.setLevel(logging.DEBUG)
     loop = asyncio.get_event_loop()
     loop.set_debug(True)
-    loop.run_until_complete(add_credential(sys.argv[1], sys.argv[2], sys.argv[3]))
+    loop.run_until_complete(add_credential(sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]))
 loop.close()

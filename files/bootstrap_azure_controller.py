@@ -24,7 +24,6 @@ from subprocess import check_output, check_call
 import traceback
 import sys
 import yaml
-import json
 from juju import tag
 from juju.controller import Controller
 from juju.client import client
@@ -33,19 +32,15 @@ from sojobo_api import settings
 from sojobo_api.api import w_datastore as datastore, w_juju as juju
 
 
-async def bootstrap_azure_controller(c_name, region, cred_name):
+async def bootstrap_azure_controller(c_name, region, cred_name, username, password):
     try:
-        username = settings.JUJU_ADMIN_USER
-        password = settings.JUJU_ADMIN_PASSWORD
+        tengu_username = settings.JUJU_ADMIN_USER
+        tengu_password = settings.JUJU_ADMIN_PASSWORD
         juju_cred_name = 't{}'.format(hashlib.md5(cred_name.encode('utf')).hexdigest())
         credential = juju.get_credential(username, cred_name)
 
-        # Check if credential is ready.
-        if not credential['state'] == 'ready':
-            raise Exception('The Credential {} is not ready yet.'.format(credential['name']))
-
         # Check if the credential is valid.
-        juju.get_controller_types()['azure'].check_valid_credentials(credential['credential'])
+        juju.get_controller_types()['azure'].check_valid_credentials(credential)
 
         temp_cred = create_temporary_cred_file(juju_cred_name, credential)
 
@@ -53,7 +48,7 @@ async def bootstrap_azure_controller(c_name, region, cred_name):
         check_call(['juju', 'add-credential', 'azure', '-f', temp_cred, '--replace'])
 
         logger.info('Bootstrapping controller in Azure cloud...')
-        check_call(['juju', 'bootstrap', '--agent-version=2.3.0', 'azure/{}'.format(region),
+        check_call(['juju', 'bootstrap', '--agent-version=2.3.0', 'azure',
                     c_name, '--credential', juju_cred_name])
 
         # Remove temporary credentials.
@@ -61,7 +56,7 @@ async def bootstrap_azure_controller(c_name, region, cred_name):
 
         logger.info('Setting admin password...')
         check_output(['juju', 'change-user-password', 'admin', '-c', c_name],
-                     input=bytes('{}\n{}\n'.format(password, password), 'utf-8'))
+                     input=bytes('{}\n{}\n'.format(tengu_password, tengu_password), 'utf-8'))
 
         logger.info('Updating controller in database...')
         con_data = update_controller_database(c_name)
@@ -70,13 +65,29 @@ async def bootstrap_azure_controller(c_name, region, cred_name):
         controller = Controller()
         await controller.connect(
             con_data['controllers'][c_name]['api-endpoints'][0],
-            username, password, con_data['controllers'][c_name]['ca-cert'])
+            tengu_username, tengu_password, con_data['controllers'][c_name]['ca-cert'])
+
+        user_info = datastore.get_user(username)
+        juju_username = user_info["juju_username"]
+        user = tag.user(juju_username)
 
         logger.info('Adding existing credentials to new controller...')
-        await update_credentials_new_controller(controller, username, cred_name)
+        await update_credentials_new_controller(controller, username, juju_username, cred_name)
+
+        model_facade = client.ModelManagerFacade.from_connection(
+                        controller.connection)
+        controller_facade = client.ControllerFacade.from_connection(controller.connection)
+        if username != tengu_username:
+            user_facade = client.UserManagerFacade.from_connection(controller.connection)
+            users = [client.AddUser(display_name=juju_username,
+                                    username=juju_username,
+                                    password=password)]
+            await user_facade.AddUser(users)
+            changes = client.ModifyControllerAccess('superuser', 'grant', user)
+            await controller_facade.ModifyControllerAccess([changes])
 
         logger.info('Adding default models to database...')
-        await add_default_models_to_database(c_name, cred_name, username, controller)
+        await add_default_models_to_database(c_name, cred_name, username, juju_username, controller, user_info)
 
         logger.info('Controller succesfully created!')
     except Exception:
@@ -86,7 +97,8 @@ async def bootstrap_azure_controller(c_name, region, cred_name):
             logger.error(l)
         datastore.set_controller_state(c_name, 'error')
     finally:
-        await juju.disconnect(controller)
+        if 'controller' in locals():
+            await juju.disconnect(controller)
 
 
 def create_temporary_cred_file(juju_cred_name, credential):
@@ -124,39 +136,55 @@ def update_controller_database(c_name):
     return con_data
 
 
-async def add_default_models_to_database(c_name, cred_name, username, controller):
+async def add_default_models_to_database(c_name, cred_name, username, juju_username, controller, user_info):
     """Adds the default models, that have been created by new controller, to the
     database."""
-    models = await controller.get_models()
-    for model in models.serialize()['user-models']:
-        model = model.serialize()['model'].serialize()
-        m_key = juju.construct_model_key(c_name, model['name'])
-        datastore.create_model(m_key, model['name'],
-                               state='Model is being deployed', uuid='')
-        datastore.add_model_to_controller(c_name, m_key)
-        datastore.set_model_state(m_key, 'ready', credential=cred_name,
-                                  uuid=model['uuid'])
-        datastore.set_model_access(m_key, username, 'admin')
+    model_facade = client.ModelManagerFacade.from_connection(
+                    controller.connection)
+    controller_facade = client.ControllerFacade.from_connection(controller.connection)
+    user = tag.user(juju_username)
+    models = await controller_facade.AllModels()
+    for model in models.user_models:
+        if model:
+            m_key = juju.construct_model_key(c_name, model.model.name)
+            logger.info(model.model.name)
+            if username != settings.JUJU_ADMIN_USER:
+                model_tag = tag.model(model.model.uuid)
+                changes = client.ModifyModelAccess('admin', 'grant', model_tag, user)
+                await model_facade.ModifyModelAccess([changes])
+            datastore.create_model(m_key, model.model.name, state='Model is being deployed', uuid='')
+            datastore.add_model_to_controller(c_name, m_key)
+            datastore.set_model_state(m_key, 'ready', credential=cred_name, uuid=model.model.uuid)
+            datastore.set_model_access(m_key, username, 'admin')
+            ssh_keys = user_info["ssh_keys"]
+            if len(ssh_keys) > 0:
+                juju.update_ssh_keys_model(username, ssh_keys, c_name, m_key)
 
 
-async def update_credentials_new_controller(controller, username, new_cred_name):
+async def update_credentials_new_controller(controller, username, juju_username, new_cred_name):
     """Adds the existing credentials (if any) to the new controller."""
-    credentials = datastore.get_credentials(username)
-    for c in credentials:
-        if c['name'] != new_cred_name:
-            credential = datastore.get_credential(username, c['name'])
-            await juju.update_cloud(controller, 'azure', credential, username)
+    credentials = datastore.get_cloud_credentials('azure', username)
+    for cred in credentials:
+        if cred['type'] == 'azure':
+            if username != settings.JUJU_ADMIN_USER:
+                await juju.update_cloud(controller, 'azure', cred['name'], juju_username, username)
+                logger.info('Added credential %s to controller ', cred['name'])
+            elif cred['name'] != new_cred_name:
+                await juju.update_cloud(controller, 'azure', cred['name'], juju_username, username)
 
 
 if __name__ == '__main__':
+    logging.basicConfig(level=logging.DEBUG)
+    ws_logger = logging.getLogger('websockets.protocol')
     logger = logging.getLogger('bootstrap_azure_controller')
     hdlr = logging.FileHandler('{}/log/bootstrap_azure_controller.log'.format(settings.SOJOBO_API_DIR))
     formatter = logging.Formatter('%(asctime)s %(levelname)s %(message)s')
     hdlr.setFormatter(formatter)
     logger.addHandler(hdlr)
-    logger.setLevel(logging.INFO)
+    ws_logger.addHandler(hdlr)
+    ws_logger.setLevel(logging.DEBUG)
+    logger.setLevel(logging.DEBUG)
     loop = asyncio.get_event_loop()
     loop.set_debug(False)
-    loop.run_until_complete(bootstrap_azure_controller(sys.argv[1], sys.argv[2],
-                                                       sys.argv[3]))
+    loop.run_until_complete(bootstrap_azure_controller(sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5]))
     loop.close()
