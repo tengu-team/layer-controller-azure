@@ -139,6 +139,7 @@ def update_controller_database(c_name):
 async def add_default_models_to_database(c_name, cred_name, username, juju_username, controller, user_info):
     """Adds the default models, that have been created by new controller, to the
     database."""
+    c_info = datastore.get_controller(c_name)
     model_facade = client.ModelManagerFacade.from_connection(
                     controller.connection)
     controller_facade = client.ControllerFacade.from_connection(controller.connection)
@@ -146,7 +147,7 @@ async def add_default_models_to_database(c_name, cred_name, username, juju_usern
     models = await controller_facade.AllModels()
     for model in models.user_models:
         if model:
-            m_key = juju.construct_model_key(c_name, model.model.name)
+            m_key = juju.construct_model_key(c_info['name'], model.model.name)
             logger.info(model.model.name)
             if username != settings.JUJU_ADMIN_USER:
                 model_tag = tag.model(model.model.uuid)
