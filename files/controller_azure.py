@@ -29,7 +29,6 @@ CRED_KEYS = ['application-id, application-password, subscription-id']
 def create_controller(name, region, credential, username, password):
     Popen(["python3", "{}/scripts/bootstrap_azure_controller.py".format(settings.SOJOBO_API_DIR),
            name, region, credential, username, password])
-    return 202, 'Environment {} is being created in region {}'.format(name, region)
 
 
 def get_supported_series():
