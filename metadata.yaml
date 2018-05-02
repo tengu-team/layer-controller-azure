@@ -1,5 +1,6 @@
 name: controller-azure
 summary: Enables the use of azure-clouds in the Sojobo-api
+maintainer: Michiel Ghyselinck <michiel.ghyselinck@tengu.io>
 description: |
   This subordenate charm copies the necessairy files to enable the use of azure-type clouds and restarts the api.
 tags: ['misc']
